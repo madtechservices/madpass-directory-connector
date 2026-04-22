@@ -1,4 +1,13 @@
-import { Component, NgZone, OnDestroy, OnInit, signal } from "@angular/core";
+import { NgClass } from "@angular/common";
+import {
+  ChangeDetectionStrategy,
+  Component,
+  OnDestroy,
+  OnInit,
+  inject,
+  signal,
+} from "@angular/core";
+import { FormsModule } from "@angular/forms";
 import { webUtils } from "electron";
 
 import { I18nService } from "@/libs/abstractions/i18n.service";
@@ -13,40 +22,47 @@ import { OneLoginConfiguration } from "@/libs/models/oneLoginConfiguration";
 import { SyncConfiguration } from "@/libs/models/syncConfiguration";
 import { ConnectorUtils } from "@/libs/utils";
 
+import { A11yTitleDirective } from "@/src-gui/angular/directives/a11y-title.directive";
+import { I18nPipe } from "@/src-gui/angular/pipes/i18n.pipe";
+
 @Component({
   selector: "app-settings",
   templateUrl: "settings.component.html",
-  standalone: false,
+  standalone: true,
+  changeDetection: ChangeDetectionStrategy.OnPush,
+  imports: [A11yTitleDirective, FormsModule, I18nPipe, NgClass],
 })
 export class SettingsComponent implements OnInit, OnDestroy {
   directory = signal<DirectoryType>(null);
-  directoryType = DirectoryType;
+
+  readonly directoryType = DirectoryType;
+  readonly directoryOptions: { name: string; value: DirectoryType | null }[];
+
   ldap = signal(new LdapConfiguration());
   gsuite = signal(new GSuiteConfiguration());
   entra = signal(new EntraIdConfiguration());
   okta = signal(new OktaConfiguration());
   oneLogin = signal(new OneLoginConfiguration());
   sync = signal(new SyncConfiguration());
-  directoryOptions = signal<{ name: string; value: DirectoryType | null }[]>([]);
+
   showLdapPassword = signal(false);
   showEntraKey = signal(false);
   showOktaKey = signal(false);
   showOneLoginSecret = signal(false);
 
-  constructor(
-    private i18nService: I18nService,
-    private ngZone: NgZone,
-    private logService: LogService,
-    private stateService: StateService,
-  ) {
-    this.directoryOptions.set([
+  private i18nService = inject(I18nService);
+  private logService = inject(LogService);
+  private stateService = inject(StateService);
+
+  constructor() {
+    this.directoryOptions = [
       { name: this.i18nService.t("select"), value: null },
       { name: "Active Directory / LDAP", value: DirectoryType.Ldap },
       { name: "Entra ID", value: DirectoryType.EntraID },
       { name: "G Suite (Google)", value: DirectoryType.GSuite },
       { name: "Okta", value: DirectoryType.Okta },
       { name: "OneLogin", value: DirectoryType.OneLogin },
-    ]);
+    ];
   }
 
   async ngOnInit() {
@@ -77,17 +93,19 @@ export class SettingsComponent implements OnInit, OnDestroy {
   }
 
   async submit() {
-    ConnectorUtils.adjustConfigForSave(this.ldap(), this.sync());
-    if (this.ldap() != null && this.ldap().ad) {
-      this.ldap().pagedSearch = true;
+    const ldap = this.ldap();
+    const sync = this.sync();
+    ConnectorUtils.adjustConfigForSave(ldap, sync);
+    if (ldap != null && ldap.ad) {
+      ldap.pagedSearch = true;
     }
     await this.stateService.setDirectoryType(this.directory());
-    await this.stateService.setDirectory(DirectoryType.Ldap, this.ldap());
+    await this.stateService.setDirectory(DirectoryType.Ldap, ldap);
     await this.stateService.setDirectory(DirectoryType.GSuite, this.gsuite());
     await this.stateService.setDirectory(DirectoryType.EntraID, this.entra());
     await this.stateService.setDirectory(DirectoryType.Okta, this.okta());
     await this.stateService.setDirectory(DirectoryType.OneLogin, this.oneLogin());
-    await this.stateService.setSync(this.sync());
+    await this.stateService.setSync(sync);
   }
 
   parseKeyFile() {
@@ -98,18 +116,19 @@ export class SettingsComponent implements OnInit, OnDestroy {
 
     const reader = new FileReader();
     reader.readAsText(filePicker.files[0], "utf-8");
-    reader.onload = (evt) => {
-      this.ngZone.run(async () => {
-        try {
-          const result = JSON.parse((evt.target as FileReader).result as string);
-          if (result.client_email != null && result.private_key != null) {
-            this.gsuite().clientEmail = result.client_email;
-            this.gsuite().privateKey = result.private_key;
-          }
-        } catch (e) {
-          this.logService.error(e);
+    reader.onload = async (evt) => {
+      try {
+        const result = JSON.parse((evt.target as FileReader).result as string);
+        if (result.client_email != null && result.private_key != null) {
+          this.gsuite.update((current) => ({
+            ...current,
+            clientEmail: result.client_email,
+            privateKey: result.private_key,
+          }));
         }
-      });
+      } catch (e) {
+        this.logService.error(e);
+      }
 
       // reset file input
       // ref: https://stackoverflow.com/a/20552042
@@ -125,7 +144,8 @@ export class SettingsComponent implements OnInit, OnDestroy {
       return;
     }
 
-    (this.ldap() as any)[id] = webUtils.getPathForFile(filePicker.files[0]);
+    const path = webUtils.getPathForFile(filePicker.files[0]);
+    this.ldap.update((current) => ({ ...current, [id]: path }));
     // reset file input
     // ref: https://stackoverflow.com/a/20552042
     filePicker.type = "";
